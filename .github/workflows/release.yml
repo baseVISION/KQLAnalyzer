@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-linux-x64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore src/KQLAnalyzer.csproj
+
+      - name: Publish Linux-x64 build
+        run: dotnet publish src/KQLAnalyzer.csproj -c Release -r linux-x64 -o ./publish -p:SatelliteResourceLanguages=en
+
+      - name: Include environments definition
+        run: cp environments.json ./publish/environments.json
+
+      - name: Create release archive
+        id: package
+        run: |
+          asset_name="KQLAnalyzer-linux-x64-${GITHUB_REF_NAME:-manual}.zip"
+          cd publish
+          zip -r "../${asset_name}" .
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KQLAnalyzer-linux-x64
+          path: ${{ steps.package.outputs.asset_name }}
+          if-no-files-found: error
+
+      - name: Create GitHub release for tag
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.asset_name }}
+
+      - name: Attach artifact to GitHub release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.asset_name }}
