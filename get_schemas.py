@@ -6,12 +6,22 @@ import re
 
 valid_types = {'datetime': True, 'string': True, 'int': True, 'boolean': True, 'long': True, 'bool': True, 'dynamic': True, 'real': True, 'guid': True, 'double': True, 'object': True, 'enum': True, 'decimal': True, 'timespan': True}
 
+
+def read_text_file(file_path):
+    try:
+        with open(file_path, encoding='utf-8-sig') as f:
+            return f.read()
+    except UnicodeDecodeError:
+        # Fall back for rare legacy-encoded docs while avoiding hard failures.
+        with open(file_path, encoding='cp1252', errors='replace') as f:
+            return f.read()
+
 # Extract tables from markdown files in Microsoft documentation.
 def get_table_details(fn, base_dir):
     inside_table = False
     table_name = None
     details = {}
-    data = open(fn).read()
+    data = read_text_file(fn)
     # Parse [!INCLUDE [awscloudtrail](../includes/awscloudtrail-include.md)]
     for include_fn in re.findall(r'\[!INCLUDE \[.*?\]\((.*?)\)\]', data):
         if 'reusable-content' in include_fn:
@@ -21,7 +31,7 @@ def get_table_details(fn, base_dir):
         parsed_dir = os.path.dirname(os.path.dirname(include_path)) + os.sep
         if not parsed_dir.startswith(base_dir + os.sep):
             raise Exception(f"Include path {parsed_dir} is not in {base_dir}")
-        data += open(include_path).read() + '\n'
+        data += read_text_file(include_path) + '\n'
 
     for line in data.splitlines():
         line = line.strip()
@@ -71,7 +81,8 @@ def get_table_details(fn, base_dir):
     return table_name, details
 
 def merge_additional_columns(tables, env_name):
-    additional_columns = json.load(open('additional_columns.json'))[env_name]
+    with open('additional_columns.json', encoding='utf-8') as f:
+        additional_columns = json.load(f)[env_name]
     for table_name, extra_fields in additional_columns.items():
         if table_name not in tables:
             tables[table_name] = {}

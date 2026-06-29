@@ -136,5 +136,15 @@ namespace KQLAnalyzerTests
             );
             Assert.Equal(results.ReferencedFunctions, new List<string> { "_GetWatchlist" });
         }
+
+        [Fact]
+        public void ReplaceStringWithVerbatimBackslashAndEmptyDoubleQuotedLiteral()
+        {
+            var query = """print x = replace_string("abc", @"\", "")""";
+            var globals = kqlEnvironments["sentinel"].ToGlobalState();
+            var results = KustoAnalyzer.AnalyzeQuery(query, globals, null);
+            Assert.Empty(results.ParsingErrors);
+            Assert.Equal("string", results.OutputColumns["x"]);
+        }
     }
 }

@@ -8,6 +8,399 @@ namespace KQLAnalyzer
 {
     public static class KustoAnalyzer
     {
+        private static readonly HashSet<char> ValidDoubleQuoteEscapes =
+        [
+            '\\', '"', '\'', '0', 'a', 'b', 'f', 'n', 'r', 't', 'v', 'u', 'x'
+        ];
+
+        private static string NormalizeKqlDoubleQuotedStringEscapes(string query)
+        {
+            if (string.IsNullOrEmpty(query))
+            {
+                return query;
+            }
+
+            var sb = new System.Text.StringBuilder(query.Length + 32);
+            var inSingle = false;
+            var inDouble = false;
+
+            for (var i = 0; i < query.Length; i++)
+            {
+                var ch = query[i];
+
+                if (inSingle)
+                {
+                    sb.Append(ch);
+                    if (ch == '\'')
+                    {
+                        if (i + 1 < query.Length && query[i + 1] == '\'')
+                        {
+                            sb.Append(query[i + 1]);
+                            i++;
+                        }
+                        else
+                        {
+                            inSingle = false;
+                        }
+                    }
+                    continue;
+                }
+
+                if (inDouble)
+                {
+                    if (ch == '\\')
+                    {
+                        // Handle runs of backslashes as a unit. The parser only fails when an
+                        // odd number of slashes appears directly before a non-escape character.
+                        // Keeping runs even avoids creating invalid escapes such as \W.
+                        var start = i;
+                        while (i + 1 < query.Length && query[i + 1] == '\\')
+                        {
+                            i++;
+                        }
+
+                        var runLength = i - start + 1;
+                        sb.Append('\\', runLength);
+
+                        if (i + 1 < query.Length)
+                        {
+                            var next = query[i + 1];
+                            if (!ValidDoubleQuoteEscapes.Contains(next) && (runLength % 2) != 0)
+                            {
+                                sb.Append('\\');
+                            }
+                        }
+
+                        continue;
+                    }
+
+                    sb.Append(ch);
+                    if (ch == '"')
+                    {
+                        inDouble = false;
+                    }
+                    continue;
+                }
+
+                sb.Append(ch);
+                if (ch == '\'')
+                {
+                    inSingle = true;
+                }
+                else if (ch == '"')
+                {
+                    inDouble = true;
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private static string NormalizeEmptyDoubleQuotedStrings(string query)
+        {
+            if (string.IsNullOrEmpty(query))
+            {
+                return query;
+            }
+
+            var sb = new System.Text.StringBuilder(query.Length + 16);
+            var inSingle = false;
+            var inDouble = false;
+
+            for (var i = 0; i < query.Length; i++)
+            {
+                var ch = query[i];
+
+                if (inSingle)
+                {
+                    sb.Append(ch);
+                    if (ch == '\'')
+                    {
+                        if (i + 1 < query.Length && query[i + 1] == '\'')
+                        {
+                            sb.Append(query[i + 1]);
+                            i++;
+                        }
+                        else
+                        {
+                            inSingle = false;
+                        }
+                    }
+                    continue;
+                }
+
+                if (inDouble)
+                {
+                    sb.Append(ch);
+                    if (ch == '\\' && i + 1 < query.Length)
+                    {
+                        sb.Append(query[i + 1]);
+                        i++;
+                        continue;
+                    }
+
+                    if (ch == '"')
+                    {
+                        inDouble = false;
+                    }
+                    continue;
+                }
+
+                if (ch == '"' && i + 1 < query.Length && query[i + 1] == '"')
+                {
+                    // Normalize empty double-quoted literals to single-quoted literals.
+                    // Kusto.Language can otherwise parse this shape as a missing argument.
+                    sb.Append("''");
+                    i++;
+                    continue;
+                }
+
+                sb.Append(ch);
+                if (ch == '\'')
+                {
+                    inSingle = true;
+                }
+                else if (ch == '"')
+                {
+                    inDouble = true;
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private static string NormalizeSingleBackslashSingleQuotedLiterals(string query)
+        {
+            if (string.IsNullOrEmpty(query))
+            {
+                return query;
+            }
+
+            // Some clients convert verbatim @"\" to '\', which Kusto.Language parses as
+            // an unterminated single-quoted string. Normalize this invalid token.
+            return Regex.Replace(query, @"'\\'", @"'\\\\'");
+        }
+
+        private static string NormalizeKqlVerbatimDoubleQuotedStrings(string query)
+        {
+            if (string.IsNullOrEmpty(query))
+            {
+                return query;
+            }
+
+            // Some migrated rules include C#-style verbatim literals (@"...").
+            // KQL expects regular quoted strings, so normalize them before parse.
+            const string pattern = "@\"(?:\"\"|[^\"])*\"";
+            return Regex.Replace(
+                query,
+                pattern,
+                m =>
+                {
+                    var raw = m.Value.Substring(2, m.Value.Length - 3);
+                    var unescapedQuotes = raw.Replace("\"\"", "\"");
+                    var escapedBackslashes = unescapedQuotes.Replace("\\", "\\\\");
+                    var escapedQuotes = escapedBackslashes.Replace("\"", "\\\"");
+                    return $"\"{escapedQuotes}\"";
+                }
+            );
+        }
+
+        private static string NormalizeExtractRegexLiterals(string query)
+        {
+            if (string.IsNullOrEmpty(query))
+            {
+                return query;
+            }
+
+            const string pattern = "extract\\(\\s*\"((?:\\\\.|[^\"\\\\])*)\"";
+            return Regex.Replace(
+                query,
+                pattern,
+                m =>
+                {
+                    var raw = m.Groups[1].Value;
+                    var singleQuoted = raw.Replace("'", "''");
+                    return $"extract('{singleQuoted}'";
+                }
+            );
+        }
+
+        private static string NormalizeExtractThreeArgumentCalls(string query)
+        {
+            if (string.IsNullOrEmpty(query))
+            {
+                return query;
+            }
+
+            var sb = new System.Text.StringBuilder(query.Length + 64);
+            var inSingle = false;
+            var inDouble = false;
+
+            for (var i = 0; i < query.Length; i++)
+            {
+                var ch = query[i];
+
+                if (inSingle)
+                {
+                    sb.Append(ch);
+                    if (ch == '\'')
+                    {
+                        if (i + 1 < query.Length && query[i + 1] == '\'')
+                        {
+                            sb.Append(query[i + 1]);
+                            i++;
+                        }
+                        else
+                        {
+                            inSingle = false;
+                        }
+                    }
+                    continue;
+                }
+
+                if (inDouble)
+                {
+                    sb.Append(ch);
+                    if (ch == '\\' && i + 1 < query.Length)
+                    {
+                        sb.Append(query[i + 1]);
+                        i++;
+                        continue;
+                    }
+                    if (ch == '"')
+                    {
+                        inDouble = false;
+                    }
+                    continue;
+                }
+
+                if (ch == '\'')
+                {
+                    inSingle = true;
+                    sb.Append(ch);
+                    continue;
+                }
+
+                if (ch == '"')
+                {
+                    inDouble = true;
+                    sb.Append(ch);
+                    continue;
+                }
+
+                if (
+                    i + 7 < query.Length
+                    && string.Compare(query, i, "extract(", 0, 8, StringComparison.OrdinalIgnoreCase) == 0
+                    && (i == 0 || !(char.IsLetterOrDigit(query[i - 1]) || query[i - 1] == '_'))
+                )
+                {
+                    var start = i;
+                    var open = i + 7;
+                    var depth = 1;
+                    var j = open + 1;
+                    var argInSingle = false;
+                    var argInDouble = false;
+                    var args = new List<string>();
+                    var argStart = j;
+
+                    while (j < query.Length)
+                    {
+                        var c = query[j];
+                        if (argInSingle)
+                        {
+                            if (c == '\'')
+                            {
+                                if (j + 1 < query.Length && query[j + 1] == '\'')
+                                {
+                                    j += 2;
+                                    continue;
+                                }
+                                argInSingle = false;
+                            }
+                            j++;
+                            continue;
+                        }
+
+                        if (argInDouble)
+                        {
+                            if (c == '\\' && j + 1 < query.Length)
+                            {
+                                j += 2;
+                                continue;
+                            }
+                            if (c == '"')
+                            {
+                                argInDouble = false;
+                            }
+                            j++;
+                            continue;
+                        }
+
+                        if (c == '\'')
+                        {
+                            argInSingle = true;
+                            j++;
+                            continue;
+                        }
+
+                        if (c == '"')
+                        {
+                            argInDouble = true;
+                            j++;
+                            continue;
+                        }
+
+                        if (c == '(')
+                        {
+                            depth++;
+                            j++;
+                            continue;
+                        }
+
+                        if (c == ')')
+                        {
+                            depth--;
+                            if (depth == 0)
+                            {
+                                args.Add(query.Substring(argStart, j - argStart));
+                                break;
+                            }
+                            j++;
+                            continue;
+                        }
+
+                        if (c == ',' && depth == 1)
+                        {
+                            args.Add(query.Substring(argStart, j - argStart));
+                            argStart = j + 1;
+                        }
+
+                        j++;
+                    }
+
+                    if (j < query.Length && depth == 0 && args.Count == 3)
+                    {
+                        sb.Append("extract(");
+                        sb.Append(args[0]);
+                        sb.Append(',');
+                        sb.Append(args[1]);
+                        sb.Append(',');
+                        sb.Append(args[2]);
+                        sb.Append(",typeof(string))");
+                        i = j;
+                        continue;
+                    }
+
+                    sb.Append(ch);
+                    continue;
+                }
+
+                sb.Append(ch);
+            }
+
+            return sb.ToString();
+        }
+
         // This function was taken from
         // https://github.com/microsoft/Kusto-Query-Language/blob/master/src/Kusto.Language/readme.md
         public static HashSet<TableSymbol> GetDatabaseTables(KustoCode code)
@@ -96,7 +489,42 @@ namespace KQLAnalyzer
             }
         }
 
-        // Helper function that will resolve an expression to a string.
+        public static Dictionary<string, HashSet<ColumnSymbol>> GetDatabaseTableColumnsByTable(KustoCode code)
+        {
+            var columnsByTable = new Dictionary<string, HashSet<ColumnSymbol>>();
+            GatherColumns(code.Syntax);
+            return columnsByTable;
+
+            void GatherColumns(SyntaxNode root)
+            {
+                SyntaxElement.WalkNodes(
+                    root,
+                    fnBefore: n =>
+                    {
+                        if (n.ReferencedSymbol is ColumnSymbol c)
+                        {
+                            var table = code.Globals.GetTable(c);
+                            if (table != null)
+                            {
+                                if (!columnsByTable.TryGetValue(table.Name, out var cols))
+                                {
+                                    cols = new HashSet<ColumnSymbol>();
+                                    columnsByTable[table.Name] = cols;
+                                }
+                                cols.Add(c);
+                            }
+                        }
+                        else if (n.GetCalledFunctionBody() is SyntaxNode body)
+                        {
+                            GatherColumns(body);
+                        }
+                    },
+                    fnDescend: n => !(n is FunctionDeclaration)
+                );
+            }
+        }
+
+
         // It supports constants as well as applications of strcat with constant
         // arguments.
         // It won't work for more complex expressions that call other functions since the
@@ -186,6 +614,13 @@ namespace KQLAnalyzer
             var watch = System.Diagnostics.Stopwatch.StartNew();
             var myGlobals = globals;
 
+            query = NormalizeKqlVerbatimDoubleQuotedStrings(query);
+            query = NormalizeSingleBackslashSingleQuotedLiterals(query);
+            query = NormalizeEmptyDoubleQuotedStrings(query);
+            query = NormalizeKqlDoubleQuotedStringEscapes(query);
+            query = NormalizeExtractThreeArgumentCalls(query);
+            query = NormalizeExtractRegexLiterals(query);
+
             // The FileProfile function is special in that it takes a string as a parameter,
             // but the parameter is not quoted. It appears that M365 also pre-processes queries
             // that contain this function to magically add quotes around the first parameter.
@@ -253,6 +688,11 @@ namespace KQLAnalyzer
             queryResults.ReferencedColumns = GetDatabaseTableColumns(code)
                 .Select(t => t.Name)
                 .ToList();
+            queryResults.ReferencedColumnsByTable = GetDatabaseTableColumnsByTable(code)
+                .ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value.Select(c => c.Name).OrderBy(n => n).ToList()
+                );
             if (code.ResultType != null)
             {
                 queryResults.OutputColumns = code.ResultType.Members

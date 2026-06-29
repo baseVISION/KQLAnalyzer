@@ -34,6 +34,10 @@ public class Program
             Environment.Exit(1);
         }
 
+        // Normalize schema names from documentation artifacts (for example
+        // markdown-suffixed columns like GroupMembership[**](#sentinel)).
+        EnvironmentUtils.NormalizeEnvironmentDefinitions(kqlEnvironments);
+
         // Add merged m365_with_sentinel environment if both m365 and sentinel exist
         EnvironmentUtils.AddM365WithSentinelIfPresent(kqlEnvironments);
 

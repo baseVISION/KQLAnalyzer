@@ -11,6 +11,7 @@ public class AnalyzeResults
         this.ReferencedTables = new List<string>();
         this.ReferencedFunctions = new List<string>();
         this.ReferencedColumns = new List<string>();
+        this.ReferencedColumnsByTable = new Dictionary<string, List<string>>();
     }
 
     [JsonPropertyName("output_columns")]
@@ -27,6 +28,9 @@ public class AnalyzeResults
 
     [JsonPropertyName("referenced_columns")]
     public List<string> ReferencedColumns { get; set; }
+
+    [JsonPropertyName("referenced_columns_by_table")]
+    public Dictionary<string, List<string>> ReferencedColumnsByTable { get; set; }
 
     [JsonPropertyName("elapsed_ms")]
     public long ElapsedMs { get; set; }
