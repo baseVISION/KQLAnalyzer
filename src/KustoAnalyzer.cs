@@ -8,6 +8,50 @@ namespace KQLAnalyzer
 {
     public static class KustoAnalyzer
     {
+        private static readonly Dictionary<string, string> AsimFunctionToTable =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["_Im_AuditEvent"] = "ASimAuditEventLogs",
+                ["_Im_AuditEvent_Native"] = "ASimAuditEventLogs",
+                ["_ASim_AuditEvent"] = "ASimAuditEventLogs",
+
+                ["_Im_Authentication"] = "ASimAuthenticationEventLogs",
+                ["_Im_Authentication_Native"] = "ASimAuthenticationEventLogs",
+                ["_ASim_Authentication"] = "ASimAuthenticationEventLogs",
+
+                ["_Im_DhcpEvent"] = "ASimDhcpEventLogs",
+                ["_Im_DhcpEvent_Native"] = "ASimDhcpEventLogs",
+                ["_ASim_DhcpEvent"] = "ASimDhcpEventLogs",
+
+                ["_Im_Dns"] = "ASimDnsActivityLogs",
+                ["_Im_Dns_Native"] = "ASimDnsActivityLogs",
+                ["_ASim_Dns"] = "ASimDnsActivityLogs",
+
+                ["_Im_FileEvent"] = "ASimFileEventLogs",
+                ["_Im_FileEvent_Native"] = "ASimFileEventLogs",
+                ["_ASim_FileEvent"] = "ASimFileEventLogs",
+
+                ["_Im_NetworkSession"] = "ASimNetworkSessionLogs",
+                ["_Im_NetworkSession_Native"] = "ASimNetworkSessionLogs",
+                ["_ASim_NetworkSession"] = "ASimNetworkSessionLogs",
+
+                ["_Im_ProcessEvent"] = "ASimProcessEventLogs",
+                ["_Im_ProcessEvent_Native"] = "ASimProcessEventLogs",
+                ["_ASim_ProcessEvent"] = "ASimProcessEventLogs",
+
+                ["_Im_RegistryEvent"] = "ASimRegistryEventLogs",
+                ["_Im_RegistryEvent_Native"] = "ASimRegistryEventLogs",
+                ["_ASim_RegistryEvent"] = "ASimRegistryEventLogs",
+
+                ["_Im_UserManagement"] = "ASimUserManagementActivityLogs",
+                ["_Im_UserManagement_Native"] = "ASimUserManagementActivityLogs",
+                ["_ASim_UserManagement"] = "ASimUserManagementActivityLogs",
+
+                ["_Im_WebSession"] = "ASimWebSessionLogs",
+                ["_Im_WebSession_Native"] = "ASimWebSessionLogs",
+                ["_ASim_WebSession"] = "ASimWebSessionLogs",
+            };
+
         private static readonly HashSet<char> ValidDoubleQuoteEscapes =
         [
             '\\', '"', '\'', '0', 'a', 'b', 'f', 'n', 'r', 't', 'v', 'u', 'x'
@@ -524,6 +568,38 @@ namespace KQLAnalyzer
             }
         }
 
+        public static HashSet<string> GetReferencedAsimBackingTables(KustoCode code)
+        {
+            var tables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            SyntaxElement.WalkNodes(
+                code.Syntax,
+                n =>
+                {
+                    if (n.ReferencedSymbol is FunctionSymbol functionSymbol)
+                    {
+                        if (AsimFunctionToTable.TryGetValue(functionSymbol.Name, out var tableName))
+                        {
+                            tables.Add(tableName);
+                        }
+                    }
+                    else if (n is FunctionCallExpression functionCall)
+                    {
+                        var calledName = functionCall.Name.SimpleName;
+                        if (
+                            !string.IsNullOrWhiteSpace(calledName)
+                            && AsimFunctionToTable.TryGetValue(calledName, out var tableName)
+                        )
+                        {
+                            tables.Add(tableName);
+                        }
+                    }
+                }
+            );
+
+            return tables;
+        }
+
 
         // It supports constants as well as applications of strcat with constant
         // arguments.
@@ -680,8 +756,15 @@ namespace KQLAnalyzer
 
             var code = KustoCode.ParseAndAnalyze(query, myGlobals);
 
+            var asimBackingTables = GetReferencedAsimBackingTables(code);
+
             queryResults.ParsingErrors = code.GetDiagnostics().ToList();
-            queryResults.ReferencedTables = GetDatabaseTables(code).Select(t => t.Name).ToList();
+            queryResults.ReferencedTables = GetDatabaseTables(code)
+                .Select(t => t.Name)
+                .Concat(asimBackingTables)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
             queryResults.ReferencedFunctions = GetDatabaseFunctions(code)
                 .Select(t => t.Name)
                 .ToList();
@@ -693,6 +776,52 @@ namespace KQLAnalyzer
                     kvp => kvp.Key,
                     kvp => kvp.Value.Select(c => c.Name).OrderBy(n => n).ToList()
                 );
+
+            // ASIM parser functions return tabular results that may flow through aliases/unions.
+            // In those cases Kusto can lose direct table lineage for downstream column references.
+            // Backfill column usage per ASIM backing table by intersecting referenced column names
+            // with the backing table schema.
+            var referencedColumnsSet = new HashSet<string>(
+                queryResults.ReferencedColumns,
+                StringComparer.OrdinalIgnoreCase
+            );
+            var databaseTables = myGlobals
+                .Database
+                .Members
+                .OfType<TableSymbol>()
+                .ToDictionary(t => t.Name, t => t, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var asimTable in asimBackingTables)
+            {
+                if (!queryResults.ReferencedColumnsByTable.TryGetValue(asimTable, out var tableColumns))
+                {
+                    tableColumns = new List<string>();
+                    queryResults.ReferencedColumnsByTable[asimTable] = tableColumns;
+                }
+
+                if (!databaseTables.TryGetValue(asimTable, out var tableSymbol))
+                {
+                    continue;
+                }
+
+                var tableColumnSet = new HashSet<string>(
+                    tableColumns,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+                foreach (var column in tableSymbol.Columns)
+                {
+                    if (referencedColumnsSet.Contains(column.Name))
+                    {
+                        tableColumnSet.Add(column.Name);
+                    }
+                }
+
+                queryResults.ReferencedColumnsByTable[asimTable] = tableColumnSet
+                    .OrderBy(c => c, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
             if (code.ResultType != null)
             {
                 queryResults.OutputColumns = code.ResultType.Members
