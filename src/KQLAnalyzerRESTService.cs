@@ -18,6 +18,7 @@ namespace KQLAnalyzer
         public static void LaunchRestServer(string bindAddress, KQLEnvironments kqlEnvironments)
         {
             var app = WebApplication.Create();
+            app.MapGet("/api/version", () => Results.Ok(new { version = AppVersion.Current }));
             app.MapGet("/api/environments", () => kqlEnvironments.Keys);
             app.MapPost("/api/analyze", (AnalyzeRequest data) => Analyze(data, kqlEnvironments));
             app.Run(bindAddress);

@@ -23,6 +23,10 @@ docker compose up -d
 # The API will be available at http://localhost:8000
 curl http://localhost:8000/api/environments
 
+# Check current KQLAnalyzer version
+curl http://localhost:8000/api/version
+
+
 # Analyze a query
 curl -X POST -H "Content-Type: application/json" -d@query.json http://localhost:8000/api/analyze
 
@@ -92,15 +96,24 @@ dotnet run --project=src/KQLAnalyzer.csproj -- --rest --bind-address=http://loca
 The REST web service will be available at http://localhost:8000.
 
 The following endpoints are available:
+* GET  /api/version - Return current KQLAnalyzer version.
 * POST /api/analyze - Analyze a query providing a query and platform.
 * GET  /api/environments - List available platforms.
 
 Example usage:
 ```
+curl http://localhost:8000/api/version
+
 curl -X POST -H "Content-Type: application/json" -d@query.json http://localhost:8000/api/analyze
 ```
 
 The input format for the POST request is the same as the input format for the command line tool.
+
+## Versioning
+
+The current version is stored in [src/AppVersion.cs](src/AppVersion.cs) in the global variable `AppVersion.Current`.
+
+When making a change that should be reflected in deployments, increment this value.
 
 ## Getting Schema Information
 
