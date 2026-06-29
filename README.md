@@ -5,6 +5,7 @@ This tool can be used to analyze KQL queries and provide the following informati
 * List of output columns and their types.
 * List of referenced table names.
 * List of referenced column names.
+* List of referenced column names in tables.
 * List of referenced functions.
 
 ## Usage
