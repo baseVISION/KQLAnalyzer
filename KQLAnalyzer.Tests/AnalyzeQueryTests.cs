@@ -1,111 +1,7 @@
-using Xunit;
-using KQLAnalyzer;
-using System.Text.Json;
-
-namespace KQLAnalyzerTests
-{
-    public class KQLAnalyzerTests
-    {
-        public static KQLEnvironments kqlEnvironments = JsonSerializer.Deserialize<KQLEnvironments>(
-            File.ReadAllText("environments.json")
-        )!;
-
-        public static AnalyzeResults AnalyzeFromJson(string inputFile)
-        {
-            var analyzeRequest = JsonSerializer.Deserialize<AnalyzeRequest>(
-                File.ReadAllText(inputFile)
-            );
-
-            var environmentName = analyzeRequest!.Environment;
-            var globals = kqlEnvironments[environmentName].ToGlobalState();
-
-            var results = KustoAnalyzer.AnalyzeQuery(
-                analyzeRequest.Query,
-                globals,
-                analyzeRequest.LocalData
-            );
-            return results;
-        }
-
-        private static void WriteResults(AnalyzeResults results)
-        {
-            Console.WriteLine(
-                JsonSerializer.Serialize(
-                    results,
-                    new JsonSerializerOptions { WriteIndented = true }
-                )
-            );
-        }
-
-        [Fact]
-        public void SimpleQuery()
-        {
-            var results = AnalyzeFromJson("test_data/simple_query.json");
-            Assert.Empty(results.ParsingErrors);
-            Assert.Equal(results.OutputColumns, new Dictionary<string, string> { { "a", "bool" } });
-        }
-
-        [Fact]
-        public void SimpleQueryDefaultTables()
-        {
-            var results = AnalyzeFromJson("test_data/simple_query_using_default_tables.json");
-            Assert.Empty(results.ParsingErrors);
-            Assert.Equal(
-                results.OutputColumns,
-                new Dictionary<string, string> { { "a", "string" } }
-            );
-        }
-
-
-        [Fact]
-        public void SimpleQueryCustomTables()
-        {
-            var results = AnalyzeFromJson("test_data/custom_table.json");
-            Assert.Empty(results.ParsingErrors);
-            Assert.Equal(
-                results.OutputColumns,
-                new Dictionary<string, string> { { "Value", "string" } }
-            );
-        }
-
-        [Fact]
-        public void SentinelNoFileProfile()
-        {
-            var results = AnalyzeFromJson("test_data/sentinel_no_fileprofile.json");
-            Assert.Contains(results.ParsingErrors, (
-                    e => e.Code == "KS211" && e.Message.Contains("FileProfile")
-                )
-            );
-        }
-
-        [Fact]
-        public void FileProfile()
-        {
-            var results = AnalyzeFromJson("test_data/fileprofile.json");
-            Assert.Empty(results.ParsingErrors);
-            Assert.Contains(results.OutputColumns,(e => e.Key == "Issuer")); // Add FileProfile columns
-            // SHA1 exists in both input and in FileProfile so there should also be a SHA11
-            Assert.Contains(results.OutputColumns,(e => e.Key == "SHA1"));
-            Assert.Contains(results.OutputColumns,(e => e.Key == "SHA11"));
-            Assert.Contains(results.OutputColumns,(e => e.Key == "Foo")); // Original input column is preserved
-        }
-
-        [Fact]
-        public void TabularFunction()
-        {
-            var results = AnalyzeFromJson("test_data/tabular_function.json");
-            Assert.Empty(results.ParsingErrors);
-            Assert.Equal(
-                results.OutputColumns,
-                new Dictionary<string, string> { { "output_foo", "string" } }
-            );
-            Assert.Equal(results.ReferencedFunctions, new List<string> { "MyFunction" });
-        }
-
-        [Fact]
-        public void TabularFunctionRequiredArgs()
-        {
-            var results = AnalyzeFromJson("test_data/tabular_function_required_args.json");
+Fix problem with double quoted literals at the end
+Double-quoted literals are causing problems when they are at the end before another line is injected via extend.
+0405f7c
+KQLAnalyzer.Tests\AnalyzeQueryTests.cs
             Assert.Contains(results.ParsingErrors,(e => e.Code == "KS119")); // Expect KS119 error The function 'MyFunction' expects 1 argument.
         }
 
@@ -145,6 +41,24 @@ namespace KQLAnalyzerTests
             var results = KustoAnalyzer.AnalyzeQuery(query, globals, null);
             Assert.Empty(results.ParsingErrors);
             Assert.Equal("string", results.OutputColumns["x"]);
+        }
+
+        [Fact]
+        public void IifWithEmptyDoubleQuotedLiteralFollowedByExtend()
+        {
+            // Regression test for the ASIM WebSession rendered-query failures. The failing
+            // shape is an iif() whose last argument is an empty double-quoted literal,
+            // immediately followed by an appended test extend line. KQLAnalyzer
+            // must normalize the empty literal and still parse the whole query.
+            var query =
+                "_Im_WebSession(starttime=ago(4h), endtime=now())\n"
+                + "| extend Name = iif(SrcUsername contains \"@\", tostring(split(SrcUsername, '@', 0)[0]), SrcUsername), UPNSuffix = iif(SrcUsername contains \"@\", tostring(split(SrcUsername, '@', 1)[0]), \"\")\n"
+                + "| extend test = strcat(\"test\")";
+            var globals = kqlEnvironments["sentinel"].ToGlobalState();
+            var results = KustoAnalyzer.AnalyzeQuery(query, globals, null);
+            Assert.Empty(results.ParsingErrors);
+            Assert.Equal("string", results.OutputColumns["UPNSuffix"]);
+            Assert.Equal("string", results.OutputColumns["test"]);
         }
     }
 }
