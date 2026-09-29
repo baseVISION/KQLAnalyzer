@@ -8,13 +8,15 @@ namespace KQLAnalyzer;
 /// </summary>
 public static class EventColumnMapping
 {
-    public static Dictionary<string, List<string>> Load(FileInfo? file)
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Load(FileInfo? file)
     {
         var mapping = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
         if (file == null || !file.Exists)
         {
-            return mapping;
+            return new Dictionary<string, IReadOnlyList<string>>(
+                StringComparer.OrdinalIgnoreCase
+            );
         }
 
         foreach (var line in File.ReadLines(file.FullName))
@@ -59,6 +61,10 @@ public static class EventColumnMapping
             }
         }
 
-        return mapping;
+        return mapping.ToDictionary(
+            entry => entry.Key,
+            entry => (IReadOnlyList<string>)entry.Value,
+            StringComparer.OrdinalIgnoreCase
+        );
     }
 }
