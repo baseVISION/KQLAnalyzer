@@ -1,0 +1,29 @@
+# Maps a table to the column(s) whose equality/membership filter values identify
+# the event type (MITRE data component style, e.g. ActionType:ProcessCreated).
+# Format: Table,EventColumn (case-insensitive; repeat a table on multiple lines
+# to map several event columns). Lines starting with # are ignored.
+Table,EventColumn
+DeviceProcessEvents,ActionType
+DeviceEvents,ActionType
+DeviceFileEvents,ActionType
+DeviceNetworkEvents,ActionType
+DeviceRegistryEvents,ActionType
+DeviceImageLoadEvents,ActionType
+DeviceLogonEvents,ActionType
+EmailPostDeliveryEvents,ActionType
+CloudAppEvents,ActionType
+AuditLogs,OperationName
+OfficeActivity,Operation
+AzureActivity,OperationNameValue
+AzureActivity,OperationName
+SecurityEvent,EventID
+ASimProcessEventLogs,EventType
+ASimFileEventLogs,EventType
+ASimNetworkSessionLogs,EventType
+ASimWebSessionLogs,EventType
+ASimAuthenticationEventLogs,EventType
+ASimAuditEventLogs,EventType
+ASimRegistryEventLogs,EventType
+ASimDnsActivityLogs,EventType
+ASimDhcpEventLogs,EventType
+ASimUserManagementActivityLogs,EventType

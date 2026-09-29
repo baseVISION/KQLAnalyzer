@@ -833,6 +833,246 @@ namespace KQLAnalyzer
         }
 
 
+        /// <summary>
+        /// Extracts event filters per table: equality ("==", "=~") and membership
+        /// ("in", "in~") predicates with constant values on the configured event
+        /// columns (see event_columns.csv). Returns { table: { "Column:Value" } }
+        /// using the canonical column casing from the mapping. Negations and
+        /// non-constant predicates are ignored.
+        /// </summary>
+        public static Dictionary<string, HashSet<string>> GetEventFiltersByTable(
+            KustoCode code,
+            IReadOnlyDictionary<string, IReadOnlyList<string>> eventColumnsByTable
+        )
+        {
+            var eventsByTable = new Dictionary<string, HashSet<string>>(
+                StringComparer.OrdinalIgnoreCase
+            );
+            if (eventColumnsByTable == null || eventColumnsByTable.Count == 0)
+            {
+                return eventsByTable;
+            }
+
+            // Case-insensitive lookup of mapped event columns per table.
+            var mapping = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in eventColumnsByTable)
+            {
+                mapping[entry.Key] = new HashSet<string>(
+                    entry.Value,
+                    StringComparer.OrdinalIgnoreCase
+                );
+            }
+
+            // Referenced tables used for fallback attribution when a column
+            // reference cannot be resolved to a single table (for example after a
+            // project/rename, through a union, or via an ASIM parser function).
+            var referencedTables = GetDatabaseTables(code)
+                .Select(t => t.Name)
+                .Concat(GetReferencedAsimBackingTables(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            GatherFilters(code.Syntax);
+            return eventsByTable;
+
+            void GatherFilters(SyntaxNode root)
+            {
+                SyntaxElement.WalkNodes(
+                    root,
+                    fnBefore: n =>
+                    {
+                        if (
+                            n is BinaryExpression binary
+                            && (
+                                binary.Kind == SyntaxKind.Equal
+                                || binary.Kind == SyntaxKind.EqualTilde
+                            )
+                        )
+                        {
+                            TryAddEquality(binary.Left, binary.Right);
+                            TryAddEquality(binary.Right, binary.Left);
+                        }
+                        else if (n is FunctionCallExpression call)
+                        {
+                            var name = call.Name.SimpleName;
+                            if (name == "in" || name == "in~")
+                            {
+                                TryAddIn(call);
+                            }
+                        }
+                    },
+                    fnDescend: n => !(n is FunctionDeclaration)
+                );
+            }
+
+            void TryAddEquality(Expression columnCandidate, Expression valueCandidate)
+            {
+                if (TryGetConstantValue(valueCandidate, out var value))
+                {
+                    TryAddFilter(columnCandidate, value);
+                }
+            }
+
+            void TryAddIn(FunctionCallExpression call)
+            {
+                var args = call.ArgumentList.Expressions;
+                if (args.Count < 2)
+                {
+                    return;
+                }
+
+                var columnCandidate = args[0].Element;
+                var listCandidate = args[1].Element;
+
+                if (listCandidate is ListExpression list)
+                {
+                    foreach (var element in list.Expressions)
+                    {
+                        if (TryGetConstantValue(element.Element, out var value))
+                        {
+                            TryAddFilter(columnCandidate, value);
+                        }
+                    }
+                }
+                else if (TryGetConstantValues(listCandidate, out var values))
+                {
+                    // Covers let-bound dynamic arrays, e.g. let x = dynamic(["a"]);
+                    foreach (var value in values)
+                    {
+                        TryAddFilter(columnCandidate, value);
+                    }
+                }
+            }
+
+            void TryAddFilter(Expression columnCandidate, string value)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    return;
+                }
+
+                var expr = Unwrap(columnCandidate);
+                var columnSymbol = expr.ReferencedSymbol as ColumnSymbol;
+                var columnName =
+                    columnSymbol?.Name ?? (expr as NameReference)?.SimpleName;
+                if (string.IsNullOrEmpty(columnName))
+                {
+                    return;
+                }
+
+                string tableName;
+                string canonicalColumn;
+
+                var table = columnSymbol != null ? code.Globals.GetTable(columnSymbol) : null;
+                if (table != null)
+                {
+                    if (!TryGetMappedColumn(table.Name, columnName, out canonicalColumn))
+                    {
+                        return;
+                    }
+                    tableName = table.Name;
+                }
+                else
+                {
+                    // Fallback: attribute by name when exactly one referenced table
+                    // maps this event column.
+                    var candidates = referencedTables
+                        .Where(t => TryGetMappedColumn(t, columnName, out _))
+                        .ToList();
+                    if (candidates.Count != 1)
+                    {
+                        return;
+                    }
+                    tableName = candidates[0];
+                    TryGetMappedColumn(tableName, columnName, out canonicalColumn);
+                }
+
+                if (!eventsByTable.TryGetValue(tableName, out var events))
+                {
+                    events = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    eventsByTable[tableName] = events;
+                }
+
+                events.Add($"{canonicalColumn}:{value.Trim()}");
+            }
+
+            bool TryGetMappedColumn(string table, string column, out string canonical)
+            {
+                canonical = null;
+                if (
+                    mapping.TryGetValue(table, out var columns)
+                    && columns.TryGetValue(column, out var stored)
+                )
+                {
+                    canonical = stored;
+                    return true;
+                }
+                return false;
+            }
+
+            // Unwraps simple scalar wrappers such as tostring(ActionType) or
+            // tolower(ActionType) so the underlying column reference is found.
+            static Expression Unwrap(Expression expr)
+            {
+                while (
+                    expr is FunctionCallExpression wrapper
+                    && wrapper.ArgumentList.Expressions.Count == 1
+                    && (
+                        wrapper.Name.SimpleName == "tostring"
+                        || wrapper.Name.SimpleName == "tolower"
+                        || wrapper.Name.SimpleName == "toupper"
+                    )
+                )
+                {
+                    expr = wrapper.ArgumentList.Expressions[0].Element;
+                }
+                return expr;
+            }
+
+            static bool TryGetConstantValue(Expression expr, out string value)
+            {
+                value = null;
+                switch (expr?.ConstantValue)
+                {
+                    case string s:
+                        value = s;
+                        return true;
+                    case JsonElement json when json.ValueKind == JsonValueKind.String:
+                        value = json.GetString();
+                        return value != null;
+                    case bool b:
+                        value = b ? "true" : "false";
+                        return true;
+                    case sbyte or byte or short or ushort or int or uint or long or ulong:
+                        value = Convert.ToString(
+                            expr.ConstantValue,
+                            System.Globalization.CultureInfo.InvariantCulture
+                        );
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            static bool TryGetConstantValues(Expression expr, out List<string> values)
+            {
+                values = null;
+                if (expr?.ConstantValue is JsonElement json && json.ValueKind == JsonValueKind.Array)
+                {
+                    values = new List<string>();
+                    foreach (var item in json.EnumerateArray())
+                    {
+                        if (item.ValueKind == JsonValueKind.String)
+                        {
+                            values.Add(item.GetString());
+                        }
+                    }
+                    return values.Count > 0;
+                }
+                return false;
+            }
+        }
+
         // It supports constants as well as applications of strcat with constant
         // arguments.
         // It won't work for more complex expressions that call other functions since the
@@ -916,7 +1156,12 @@ namespace KQLAnalyzer
             );
         }
 
-        public static AnalyzeResults AnalyzeQuery(string query, GlobalState globals, LocalData localData)
+        public static AnalyzeResults AnalyzeQuery(
+            string query,
+            GlobalState globals,
+            LocalData localData,
+            IReadOnlyDictionary<string, IReadOnlyList<string>> eventColumnsByTable = null
+        )
         {
             // Keep track of how long it takes to analyze the query.
             var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -1060,6 +1305,13 @@ namespace KQLAnalyzer
                     .OrderBy(c => c, StringComparer.OrdinalIgnoreCase)
                     .ToList();
             }
+
+            queryResults.EventsByTable = GetEventFiltersByTable(code, eventColumnsByTable)
+                .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList()
+                );
 
             if (code.ResultType != null)
             {

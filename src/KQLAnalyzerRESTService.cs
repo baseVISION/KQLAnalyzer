@@ -2,7 +2,11 @@ namespace KQLAnalyzer
 {
     public class KQLAnalyzerRESTService
     {
-        public static IResult Analyze(AnalyzeRequest data, KQLEnvironments kqlEnvironments)
+        public static IResult Analyze(
+            AnalyzeRequest data,
+            KQLEnvironments kqlEnvironments,
+            IReadOnlyDictionary<string, IReadOnlyList<string>> eventColumnsByTable
+        )
         {
             // Check if environment is in KqlEnvironment.Environments
             if (!kqlEnvironments.ContainsKey(data.Environment))
@@ -11,16 +15,28 @@ namespace KQLAnalyzer
             }
 
             var globals = kqlEnvironments[data.Environment].ToGlobalState();
-            var results = KustoAnalyzer.AnalyzeQuery(data.Query, globals, data.LocalData);
+            var results = KustoAnalyzer.AnalyzeQuery(
+                data.Query,
+                globals,
+                data.LocalData,
+                eventColumnsByTable
+            );
             return Results.Ok(results);
         }
 
-        public static void LaunchRestServer(string bindAddress, KQLEnvironments kqlEnvironments)
+        public static void LaunchRestServer(
+            string bindAddress,
+            KQLEnvironments kqlEnvironments,
+            IReadOnlyDictionary<string, IReadOnlyList<string>> eventColumnsByTable
+        )
         {
             var app = WebApplication.Create();
             app.MapGet("/api/version", () => Results.Ok(new { version = AppVersion.Current }));
             app.MapGet("/api/environments", () => kqlEnvironments.Keys);
-            app.MapPost("/api/analyze", (AnalyzeRequest data) => Analyze(data, kqlEnvironments));
+            app.MapPost(
+                "/api/analyze",
+                (AnalyzeRequest data) => Analyze(data, kqlEnvironments, eventColumnsByTable)
+            );
             app.Run(bindAddress);
         }
     }

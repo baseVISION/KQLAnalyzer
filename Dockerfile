@@ -18,9 +18,10 @@ COPY --from=build /app/publish .
 # Copy the required JSON files to the parent directory where the app expects them
 COPY environments.json /environments.json
 COPY additional_columns.json /additional_columns.json
+COPY event_columns.csv /event_columns.csv
 
 # Expose port 8000 (default port from README)
 EXPOSE 8000
 
 # Run the REST API service with explicit environments file path
-ENTRYPOINT ["dotnet", "KQLAnalyzer.dll", "--rest", "--bind-address=http://0.0.0.0:8000", "--environments-file=/environments.json"]
+ENTRYPOINT ["dotnet", "KQLAnalyzer.dll", "--rest", "--bind-address=http://0.0.0.0:8000", "--environments-file=/environments.json", "--event-columns-file=/event_columns.csv"]

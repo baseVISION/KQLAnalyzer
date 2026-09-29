@@ -6,8 +6,14 @@ This tool can be used to analyze KQL queries and provide the following informati
 * List of referenced table names.
 * List of referenced column names.
 * List of referenced column names in tables.
-* List of referenced functions.
+* List of referenced functions.* List of event filters per table (`events_by_table`): constant equality/`in`
+  predicates on the configured event columns, formatted as `Column:Value`
+  (for example `ActionType:ProcessCreated` for DeviceProcessEvents).
 
+The table to event column mapping is defined in `event_columns.csv`
+(`Table,EventColumn`, one mapping per line, case-insensitive). It is loaded via
+`--event-columns-file` (defaults to `../event_columns.csv`). When the file is
+missing, `events_by_table` is simply empty.
 ## Usage
 
 The tool can be used in three different ways:

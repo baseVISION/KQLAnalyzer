@@ -12,6 +12,7 @@ public class AnalyzeResults
         this.ReferencedFunctions = new List<string>();
         this.ReferencedColumns = new List<string>();
         this.ReferencedColumnsByTable = new Dictionary<string, List<string>>();
+        this.EventsByTable = new Dictionary<string, List<string>>();
     }
 
     [JsonPropertyName("output_columns")]
@@ -31,6 +32,13 @@ public class AnalyzeResults
 
     [JsonPropertyName("referenced_columns_by_table")]
     public Dictionary<string, List<string>> ReferencedColumnsByTable { get; set; }
+
+    // Event filters per table derived from equality/membership predicates on the
+    // configured event columns (see event_columns.csv), formatted as "Column:Value"
+    // (for example "ActionType:ProcessCreated"). Empty when no mapping is configured
+    // or the query does not filter on a mapped event column.
+    [JsonPropertyName("events_by_table")]
+    public Dictionary<string, List<string>> EventsByTable { get; set; }
 
     [JsonPropertyName("elapsed_ms")]
     public long ElapsedMs { get; set; }
