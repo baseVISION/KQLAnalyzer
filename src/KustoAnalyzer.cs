@@ -1160,7 +1160,30 @@ namespace KQLAnalyzer
             string query,
             GlobalState globals,
             LocalData localData,
-            IReadOnlyDictionary<string, IReadOnlyList<string>> eventColumnsByTable = null
+            bool debug,
+            bool strictMode = false,
+            string queryId = ""
+        )
+        {
+            return AnalyzeQuery(
+                query,
+                globals,
+                localData,
+                null,
+                debug,
+                strictMode,
+                queryId
+            );
+        }
+
+        public static AnalyzeResults AnalyzeQuery(
+            string query,
+            GlobalState globals,
+            LocalData localData,
+            IReadOnlyDictionary<string, IReadOnlyList<string>> eventColumnsByTable = null,
+            bool debug = false,
+            bool strictMode = false,
+            string queryId = ""
         )
         {
             // Keep track of how long it takes to analyze the query.
@@ -1243,6 +1266,24 @@ namespace KQLAnalyzer
             var asimBackingTables = GetReferencedAsimBackingTables(code);
 
             queryResults.ParsingErrors = code.GetDiagnostics().ToList();
+            if (!strictMode && queryResults.ParsingErrors.Any())
+            {
+                for (var i = queryResults.ParsingErrors.Count - 1; i >= 0; i--)
+                {
+                    var error = queryResults.ParsingErrors[i];
+                    if (error.Code == "KS141")
+                    {
+                        var startOfLineIndex = query.LastIndexOf('\n', error.Start) + 1;
+                        var rawEndIndex = query.IndexOf('\n', error.End);
+                        var endOfLineIndex = rawEndIndex == -1 ? query.Length : rawEndIndex;
+                        var queryLine = query[startOfLineIndex..endOfLineIndex];
+                        if (queryLine.Contains("coalesce("))
+                        {
+                            queryResults.ParsingErrors.RemoveAt(i);
+                        }
+                    }
+                }
+            }
             queryResults.ReferencedTables = GetDatabaseTables(code)
                 .Select(t => t.Name)
                 .Concat(asimBackingTables)
@@ -1252,6 +1293,7 @@ namespace KQLAnalyzer
             queryResults.ReferencedFunctions = GetDatabaseFunctions(code)
                 .Select(t => t.Name)
                 .ToList();
+            queryResults.ReferencedDatabaseFunctions = queryResults.ReferencedFunctions.ToList();
             queryResults.ReferencedColumns = GetDatabaseTableColumns(code)
                 .Select(t => t.Name)
                 .ToList();
@@ -1320,6 +1362,11 @@ namespace KQLAnalyzer
                     .ToDictionary(c => c.Name, c => c.Type.Name);
             }
 
+            if (debug && !string.IsNullOrEmpty(queryId))
+            {
+                Console.WriteLine($"Analyzing query with ID: {queryId}");
+            }
+
             watch.Stop();
             queryResults.ElapsedMs = watch.ElapsedMilliseconds;
             return queryResults;
@@ -1358,6 +1405,30 @@ namespace KQLAnalyzer
             var functionSymbols = new List<FunctionSymbol>();
             foreach (var function in functions)
             {
+                if (string.Equals(function.Value.OutputType, "inferred", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (
+                        function.Value.Parameters == null
+                        || string.IsNullOrWhiteSpace(function.Value.Query)
+                    )
+                    {
+                        throw new ArgumentException(
+                            $"Inferred tabular function '{function.Key}' requires 'parameters' (empty for no arguments) and a non-empty 'query'."
+                        );
+                    }
+
+                    var declaration = function.Value.Parameters.Trim();
+                    if (!declaration.StartsWith("("))
+                    {
+                        declaration = "(" + declaration + ")";
+                    }
+
+                    functionSymbols.Add(
+                        new FunctionSymbol(function.Key, declaration, function.Value.Query)
+                    );
+                    continue;
+                }
+
                 var parameters = function.Value.Arguments.Select(
                     p =>
                         new Parameter(
