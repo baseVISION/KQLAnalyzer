@@ -677,6 +677,99 @@ namespace KQLAnalyzer
             return sb.ToString();
         }
 
+        public static HashSet<VariableSymbol> GetQueryVariables(KustoCode code)
+        {
+            var variables = new HashSet<VariableSymbol>();
+            SyntaxElement.WalkNodes(
+                code.Syntax,
+                n =>
+                {
+                    if (n.ReferencedSymbol is VariableSymbol variable)
+                    {
+                        variables.Add(variable);
+                    }
+                }
+            );
+            return variables;
+        }
+
+        public static HashSet<OperatorSymbol> GetQueryOperators(KustoCode code)
+        {
+            var operators = new HashSet<OperatorSymbol>();
+            SyntaxElement.WalkNodes(
+                code.Syntax,
+                n =>
+                {
+                    if (n.ReferencedSymbol is OperatorSymbol op)
+                    {
+                        operators.Add(op);
+                    }
+                }
+            );
+            return operators;
+        }
+
+        public static HashSet<string> GetQueryTabularOperators(KustoCode code)
+        {
+            var operators = new HashSet<string>();
+            foreach (var op in code.Syntax.GetDescendants<QueryOperator>())
+            {
+                var keyword = op.GetFirstToken()?.Text;
+                if (keyword != null)
+                {
+                    operators.Add(keyword);
+                }
+            }
+
+            var expressionKinds = new HashSet<SyntaxKind>
+            {
+                SyntaxKind.ExternalDataExpression,
+                SyntaxKind.DataTableExpression,
+            };
+            foreach (var node in code.Syntax.GetDescendants<SyntaxNode>())
+            {
+                if (expressionKinds.Contains(node.Kind))
+                {
+                    operators.Add(node.Kind.ToString().Replace("Expression", string.Empty));
+                }
+            }
+
+            return operators;
+        }
+
+        public static HashSet<string> GetQueryStatements(KustoCode code)
+        {
+            var statements = new HashSet<string>();
+            SyntaxElement.WalkNodes(
+                code.Syntax,
+                n =>
+                {
+                    if (n is LetStatement)
+                    {
+                        statements.Add("let");
+                    }
+                    else if (n is PatternStatement)
+                    {
+                        statements.Add("pattern");
+                    }
+                    else if (n is RestrictStatement)
+                    {
+                        statements.Add("restrict");
+                    }
+                    else if (n is QueryParametersStatement)
+                    {
+                        statements.Add("query_parameters");
+                        statements.Add("declare");
+                    }
+                    else if (n is SetOptionStatement)
+                    {
+                        statements.Add("set");
+                    }
+                }
+            );
+            return statements;
+        }
+
         // This function was taken from
         // https://github.com/microsoft/Kusto-Query-Language/blob/master/src/Kusto.Language/readme.md
         public static HashSet<TableSymbol> GetDatabaseTables(KustoCode code)
@@ -1160,7 +1253,30 @@ namespace KQLAnalyzer
             string query,
             GlobalState globals,
             LocalData localData,
-            IReadOnlyDictionary<string, IReadOnlyList<string>> eventColumnsByTable = null
+            bool debug,
+            bool strictMode = false,
+            string queryId = ""
+        )
+        {
+            return AnalyzeQuery(
+                query,
+                globals,
+                localData,
+                null,
+                debug,
+                strictMode,
+                queryId
+            );
+        }
+
+        public static AnalyzeResults AnalyzeQuery(
+            string query,
+            GlobalState globals,
+            LocalData localData,
+            IReadOnlyDictionary<string, IReadOnlyList<string>> eventColumnsByTable = null,
+            bool debug = false,
+            bool strictMode = false,
+            string queryId = ""
         )
         {
             // Keep track of how long it takes to analyze the query.
@@ -1243,6 +1359,24 @@ namespace KQLAnalyzer
             var asimBackingTables = GetReferencedAsimBackingTables(code);
 
             queryResults.ParsingErrors = code.GetDiagnostics().ToList();
+            if (!strictMode && queryResults.ParsingErrors.Any())
+            {
+                for (var i = queryResults.ParsingErrors.Count - 1; i >= 0; i--)
+                {
+                    var error = queryResults.ParsingErrors[i];
+                    if (error.Code == "KS141")
+                    {
+                        var startOfLineIndex = query.LastIndexOf('\n', error.Start) + 1;
+                        var rawEndIndex = query.IndexOf('\n', error.End);
+                        var endOfLineIndex = rawEndIndex == -1 ? query.Length : rawEndIndex;
+                        var queryLine = query[startOfLineIndex..endOfLineIndex];
+                        if (queryLine.Contains("coalesce("))
+                        {
+                            queryResults.ParsingErrors.RemoveAt(i);
+                        }
+                    }
+                }
+            }
             queryResults.ReferencedTables = GetDatabaseTables(code)
                 .Select(t => t.Name)
                 .Concat(asimBackingTables)
@@ -1252,9 +1386,19 @@ namespace KQLAnalyzer
             queryResults.ReferencedFunctions = GetDatabaseFunctions(code)
                 .Select(t => t.Name)
                 .ToList();
+            queryResults.ReferencedDatabaseFunctions = queryResults.ReferencedFunctions.ToList();
             queryResults.ReferencedColumns = GetDatabaseTableColumns(code)
                 .Select(t => t.Name)
                 .ToList();
+            queryResults.ReferencedVariables = GetQueryVariables(code)
+                .Select(v => v.Name)
+                .ToList();
+            queryResults.ReferencedOperators = GetQueryOperators(code)
+                .Select(op => op.Name)
+                .ToList();
+            queryResults.ReferencedTabularOperators = GetQueryTabularOperators(code).ToList();
+            queryResults.ReferencedOperators.AddRange(queryResults.ReferencedTabularOperators);
+            queryResults.ReferencedStatements = GetQueryStatements(code).ToList();
             queryResults.ReferencedColumnsByTable = GetDatabaseTableColumnsByTable(code)
                 .ToDictionary(
                     kvp => kvp.Key,
@@ -1320,6 +1464,11 @@ namespace KQLAnalyzer
                     .ToDictionary(c => c.Name, c => c.Type.Name);
             }
 
+            if (debug && !string.IsNullOrEmpty(queryId))
+            {
+                Console.WriteLine($"Analyzing query with ID: {queryId}");
+            }
+
             watch.Stop();
             queryResults.ElapsedMs = watch.ElapsedMilliseconds;
             return queryResults;
@@ -1358,6 +1507,30 @@ namespace KQLAnalyzer
             var functionSymbols = new List<FunctionSymbol>();
             foreach (var function in functions)
             {
+                if (string.Equals(function.Value.OutputType, "inferred", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (
+                        function.Value.Parameters == null
+                        || string.IsNullOrWhiteSpace(function.Value.Query)
+                    )
+                    {
+                        throw new ArgumentException(
+                            $"Inferred tabular function '{function.Key}' requires 'parameters' (empty for no arguments) and a non-empty 'query'."
+                        );
+                    }
+
+                    var declaration = function.Value.Parameters.Trim();
+                    if (!declaration.StartsWith("("))
+                    {
+                        declaration = "(" + declaration + ")";
+                    }
+
+                    functionSymbols.Add(
+                        new FunctionSymbol(function.Key, declaration, function.Value.Query)
+                    );
+                    continue;
+                }
+
                 var parameters = function.Value.Arguments.Select(
                     p =>
                         new Parameter(

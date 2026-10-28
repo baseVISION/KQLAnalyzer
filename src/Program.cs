@@ -12,13 +12,15 @@ public class Program
     /// <param name="eventColumnsFile">Table to event column mapping CSV used for event filter extraction. Defaults to ../event_columns.csv.</param>
     /// <param name="rest">Start a REST server to listen for requests.</param>
     /// <param name="bindAddress">HTTP bind address to use in format http://host:port.</param>
+    /// <param name="debug">Enable debug message.</param>
 #pragma warning disable 8625
     public static void Main(
         FileInfo inputFile = null,
         FileInfo environmentsFile = null,
         FileInfo eventColumnsFile = null,
         bool rest = false,
-        string bindAddress = "http://localhost:8000"
+        string bindAddress = "http://localhost:8000",
+        bool debug = false
     )
 #pragma warning restore 8625
     {
@@ -60,7 +62,11 @@ public class Program
 
         if (rest)
         {
-            KQLAnalyzerRESTService.LaunchRestServer(bindAddress, kqlEnvironments, eventColumnsByTable);
+            KQLAnalyzerRESTService.LaunchRestServer(
+                bindAddress,
+                kqlEnvironments,
+                eventColumnsByTable
+            );
             return;
         }
 
@@ -90,7 +96,10 @@ public class Program
                 analyzeRequest.Query,
                 environment.ToGlobalState(),
                 analyzeRequest.LocalData,
-                eventColumnsByTable
+                eventColumnsByTable,
+                debug,
+                analyzeRequest.StrictMode,
+                analyzeRequest.QueryId
             );
             Console.WriteLine(
                 JsonSerializer.Serialize(

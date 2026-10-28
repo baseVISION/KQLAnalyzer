@@ -19,7 +19,10 @@ namespace KQLAnalyzer
                 data.Query,
                 globals,
                 data.LocalData,
-                eventColumnsByTable
+                eventColumnsByTable,
+                false,
+                data.StrictMode,
+                data.QueryId
             );
             return Results.Ok(results);
         }
