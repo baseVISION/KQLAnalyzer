@@ -32,7 +32,9 @@ jobs:
         run: dotnet publish src/KQLAnalyzer.csproj -c Release -r linux-x64 -o ./publish -p:SatelliteResourceLanguages=en
 
       - name: Include environments definition
-        run: cp environments.json ./publish/environments.json
+        run: |
+          cp environments.json ./publish/environments.json
+          cp event_columns.csv ./publish/event_columns.csv
 
       - name: Create release archive
         id: package
