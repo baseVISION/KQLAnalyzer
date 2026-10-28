@@ -977,21 +977,23 @@ namespace KQLAnalyzer
                         if (
                             n is BinaryExpression binary
                             && (
-                                binary.Kind == SyntaxKind.Equal
-                                || binary.Kind == SyntaxKind.EqualTilde
+                                binary.Kind == SyntaxKind.EqualExpression
+                                || binary.Kind == SyntaxKind.EqualTildeExpression
                             )
                         )
                         {
                             TryAddEquality(binary.Left, binary.Right);
                             TryAddEquality(binary.Right, binary.Left);
                         }
-                        else if (n is FunctionCallExpression call)
+                        else if (
+                            n is InExpression inExpr
+                            && (
+                                inExpr.Kind == SyntaxKind.InExpression
+                                || inExpr.Kind == SyntaxKind.InCsExpression
+                            )
+                        )
                         {
-                            var name = call.Name.SimpleName;
-                            if (name == "in" || name == "in~")
-                            {
-                                TryAddIn(call);
-                            }
+                            TryAddIn(inExpr);
                         }
                     },
                     fnDescend: n => !(n is FunctionDeclaration)
@@ -1006,33 +1008,23 @@ namespace KQLAnalyzer
                 }
             }
 
-            void TryAddIn(FunctionCallExpression call)
+            void TryAddIn(InExpression inExpr)
             {
-                var args = call.ArgumentList.Expressions;
-                if (args.Count < 2)
-                {
-                    return;
-                }
+                var columnCandidate = inExpr.Left;
 
-                var columnCandidate = args[0].Element;
-                var listCandidate = args[1].Element;
-
-                if (listCandidate is ListExpression list)
+                foreach (var element in inExpr.Right.Expressions)
                 {
-                    foreach (var element in list.Expressions)
-                    {
-                        if (TryGetConstantValue(element.Element, out var value))
-                        {
-                            TryAddFilter(columnCandidate, value);
-                        }
-                    }
-                }
-                else if (TryGetConstantValues(listCandidate, out var values))
-                {
-                    // Covers let-bound dynamic arrays, e.g. let x = dynamic(["a"]);
-                    foreach (var value in values)
+                    if (TryGetConstantValue(element.Element, out var value))
                     {
                         TryAddFilter(columnCandidate, value);
+                    }
+                    else if (TryGetConstantValues(element.Element, out var values))
+                    {
+                        // Covers let-bound dynamic arrays, e.g. let x = dynamic(["a"]);
+                        foreach (var arrayValue in values)
+                        {
+                            TryAddFilter(columnCandidate, arrayValue);
+                        }
                     }
                 }
             }
@@ -1091,7 +1083,7 @@ namespace KQLAnalyzer
 
             bool TryGetMappedColumn(string table, string column, out string canonical)
             {
-                canonical = null;
+                canonical = string.Empty;
                 if (
                     mapping.TryGetValue(table, out var columns)
                     && columns.TryGetValue(column, out var stored)
@@ -1124,15 +1116,15 @@ namespace KQLAnalyzer
 
             static bool TryGetConstantValue(Expression expr, out string value)
             {
-                value = null;
+                value = string.Empty;
                 switch (expr?.ConstantValue)
                 {
                     case string s:
                         value = s;
                         return true;
                     case JsonElement json when json.ValueKind == JsonValueKind.String:
-                        value = json.GetString();
-                        return value != null;
+                        value = json.GetString() ?? string.Empty;
+                        return value.Length > 0;
                     case bool b:
                         value = b ? "true" : "false";
                         return true;
@@ -1149,15 +1141,15 @@ namespace KQLAnalyzer
 
             static bool TryGetConstantValues(Expression expr, out List<string> values)
             {
-                values = null;
+                values = new List<string>();
                 if (expr?.ConstantValue is JsonElement json && json.ValueKind == JsonValueKind.Array)
                 {
-                    values = new List<string>();
                     foreach (var item in json.EnumerateArray())
                     {
-                        if (item.ValueKind == JsonValueKind.String)
+                        var s = item.ValueKind == JsonValueKind.String ? item.GetString() : null;
+                        if (s != null)
                         {
-                            values.Add(item.GetString());
+                            values.Add(s);
                         }
                     }
                     return values.Count > 0;
@@ -1262,7 +1254,7 @@ namespace KQLAnalyzer
                 query,
                 globals,
                 localData,
-                null,
+                (IReadOnlyDictionary<string, IReadOnlyList<string>>?)null,
                 debug,
                 strictMode,
                 queryId
@@ -1273,7 +1265,7 @@ namespace KQLAnalyzer
             string query,
             GlobalState globals,
             LocalData localData,
-            IReadOnlyDictionary<string, IReadOnlyList<string>> eventColumnsByTable = null,
+            IReadOnlyDictionary<string,             IReadOnlyList<string>>? eventColumnsByTable = null,
             bool debug = false,
             bool strictMode = false,
             string queryId = ""
