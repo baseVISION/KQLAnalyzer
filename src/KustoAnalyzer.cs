@@ -884,23 +884,21 @@ namespace KQLAnalyzer
                         if (
                             n is BinaryExpression binary
                             && (
-                                binary.Kind == SyntaxKind.EqualExpression
-                                || binary.Kind == SyntaxKind.EqualTildeExpression
+                                binary.Kind == SyntaxKind.Equal
+                                || binary.Kind == SyntaxKind.EqualTilde
                             )
                         )
                         {
                             TryAddEquality(binary.Left, binary.Right);
                             TryAddEquality(binary.Right, binary.Left);
                         }
-                        else if (
-                            n is InExpression inExpr
-                            && (
-                                inExpr.Kind == SyntaxKind.InExpression
-                                || inExpr.Kind == SyntaxKind.InCsExpression
-                            )
-                        )
+                        else if (n is FunctionCallExpression call)
                         {
-                            TryAddIn(inExpr);
+                            var name = call.Name.SimpleName;
+                            if (name == "in" || name == "in~")
+                            {
+                                TryAddIn(call);
+                            }
                         }
                     },
                     fnDescend: n => !(n is FunctionDeclaration)
@@ -915,23 +913,33 @@ namespace KQLAnalyzer
                 }
             }
 
-            void TryAddIn(InExpression inExpr)
+            void TryAddIn(FunctionCallExpression call)
             {
-                var columnCandidate = inExpr.Left;
-
-                foreach (var element in inExpr.Right.Expressions)
+                var args = call.ArgumentList.Expressions;
+                if (args.Count < 2)
                 {
-                    if (TryGetConstantValue(element.Element, out var value))
+                    return;
+                }
+
+                var columnCandidate = args[0].Element;
+                var listCandidate = args[1].Element;
+
+                if (listCandidate is ListExpression list)
+                {
+                    foreach (var element in list.Expressions)
+                    {
+                        if (TryGetConstantValue(element.Element, out var value))
+                        {
+                            TryAddFilter(columnCandidate, value);
+                        }
+                    }
+                }
+                else if (TryGetConstantValues(listCandidate, out var values))
+                {
+                    // Covers let-bound dynamic arrays, e.g. let x = dynamic(["a"]);
+                    foreach (var value in values)
                     {
                         TryAddFilter(columnCandidate, value);
-                    }
-                    else if (TryGetConstantValues(element.Element, out var values))
-                    {
-                        // Covers let-bound dynamic arrays, e.g. let x = dynamic(["a"]);
-                        foreach (var arrayValue in values)
-                        {
-                            TryAddFilter(columnCandidate, arrayValue);
-                        }
                     }
                 }
             }

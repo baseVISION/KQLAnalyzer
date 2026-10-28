@@ -1,70 +1,71 @@
-namespace KQLAnalyzer;
-
-/// <summary>
-/// Loads the table-to-event-column mapping from a CSV file with the columns
-/// "Table,EventColumn". Blank lines, lines starting with '#' and the header
-/// row are ignored. Table and column names are matched case-insensitively;
-/// the first spelling encountered is kept.
-/// </summary>
-public static class EventColumnMapping
+namespace KQLAnalyzer
 {
-    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Load(FileInfo? file)
+    /// <summary>
+    /// Loads the table to event column mapping used to derive event filters
+    /// (for example DeviceProcessEvents + ActionType, so that a predicate like
+    /// ActionType == "ProcessCreated" becomes the event "ActionType:ProcessCreated").
+    ///
+    /// The mapping file is a simple CSV with one mapping per line:
+    ///   Table,EventColumn
+    /// A table may appear on multiple lines to map several event columns.
+    /// Lines starting with # and the header line are ignored. Matching is
+    /// case-insensitive; the casing from the file is kept as canonical output.
+    /// </summary>
+    public static class EventColumnMapping
     {
-        var mapping = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-
-        if (file == null || !file.Exists)
+        public static IReadOnlyDictionary<string, IReadOnlyList<string>> Load(FileInfo file)
         {
-            return new Dictionary<string, IReadOnlyList<string>>(
+            var mapping = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+            if (file != null && file.Exists)
+            {
+                foreach (var rawLine in File.ReadAllLines(file.FullName))
+                {
+                    var line = rawLine.Trim();
+                    if (line.Length == 0 || line.StartsWith("#"))
+                    {
+                        continue;
+                    }
+
+                    var parts = line.Split(',');
+                    if (parts.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var table = parts[0].Trim();
+                    var column = parts[1].Trim();
+                    if (table.Length == 0 || column.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    // Skip the header line.
+                    if (
+                        table.Equals("Table", StringComparison.OrdinalIgnoreCase)
+                        && column.Equals("EventColumn", StringComparison.OrdinalIgnoreCase)
+                    )
+                    {
+                        continue;
+                    }
+
+                    if (!mapping.TryGetValue(table, out var columns))
+                    {
+                        columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        mapping[table] = columns;
+                    }
+
+                    columns.Add(column);
+                }
+            }
+
+            return mapping.ToDictionary(
+                kvp => kvp.Key,
+                kvp =>
+                    (IReadOnlyList<string>)
+                        kvp.Value.OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToList(),
                 StringComparer.OrdinalIgnoreCase
             );
         }
-
-        foreach (var line in File.ReadLines(file.FullName))
-        {
-            var trimmed = line.Trim();
-            if (trimmed.Length == 0 || trimmed.StartsWith("#", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            var parts = trimmed.Split(',');
-            if (parts.Length < 2)
-            {
-                continue;
-            }
-
-            var table = parts[0].Trim();
-            var column = parts[1].Trim();
-            if (table.Length == 0 || column.Length == 0)
-            {
-                continue;
-            }
-
-            // Skip the header row.
-            if (
-                table.Equals("Table", StringComparison.OrdinalIgnoreCase)
-                && column.Equals("EventColumn", StringComparison.OrdinalIgnoreCase)
-            )
-            {
-                continue;
-            }
-
-            if (!mapping.TryGetValue(table, out var columns))
-            {
-                columns = new List<string>();
-                mapping[table] = columns;
-            }
-
-            if (!columns.Contains(column, StringComparer.OrdinalIgnoreCase))
-            {
-                columns.Add(column);
-            }
-        }
-
-        return mapping.ToDictionary(
-            entry => entry.Key,
-            entry => (IReadOnlyList<string>)entry.Value,
-            StringComparer.OrdinalIgnoreCase
-        );
     }
 }
